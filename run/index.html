@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KasperskyOS CE 2.0 — запуск в браузере</title>
+  <link rel="stylesheet" href="./runtime/xterm.css" />
+  <!-- GitHub Pages не умеет COOP/COEP-заголовки: добавляет их service worker.
+       Локально, где заголовки уже есть, он ничего не делает. -->
+  <script src="./coi-serviceworker.js"></script>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #0b0f14;
+      color: #e6edf3;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      height: 100dvh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 16px;
+      border-bottom: 1px solid #21262d;
+      font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+      font-size: 13px;
+    }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #00c88e; }
+    .title { font-weight: 600; }
+    .sub { color: #7d8590; }
+    a.back { margin-left: auto; color: #00c88e; text-decoration: none; }
+    a.back:hover { text-decoration: underline; }
+    #status {
+      padding: 8px 16px;
+      font-family: Consolas, monospace; font-size: 12.5px;
+      color: #7d8590; border-bottom: 1px solid #21262d;
+    }
+    #status .ok { color: #00c88e; }
+    #status .err { color: #ff7b72; }
+    #terminal-wrap { flex: 1; min-height: 0; padding: 0; }
+    #terminal { height: 100%; }
+    .xterm { height: 100%; padding: 4px 0 0 8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="dot"></span>
+    <span class="title">qemu-system-aarch64 · wasm</span>
+    <span class="sub" id="ex-name"></span>
+    <a class="back" href="../">← к каталогу примеров</a>
+  </header>
+  <div id="status">Инициализация…</div>
+  <div id="terminal-wrap"><div id="terminal"></div></div>
+
+  <script src="./runtime/xterm.js"></script>
+  <script src="./runtime/xterm-pty.js"></script>
+  <script type="module">
+    const statusEl = document.getElementById('status');
+    const say = (msg, cls) => { statusEl.innerHTML = `<span class="${cls || ''}">${msg}</span>`; };
+
+    const ex = new URLSearchParams(location.search).get('example') || 'hello';
+    const qs = new URLSearchParams(location.search);
+    const smp = qs.get('smp') || '2'; // SMP-ядро гостя: 2 vCPU быстрее ~12%
+    const accel = qs.get('accel'); // например: tcg,thread=multi
+
+    // Аргументы, специфичные для отдельных примеров
+    const EXTRA_ARGS = {
+      uart: ['-append', 'diag.handoff=uart'],
+      uart_toybox: ['-append', 'diag.handoff=uart'],
+    };
+    const extraArgs = [...(EXTRA_ARGS[ex] || []), '-smp', smp,
+                       ...(accel ? ['-accel', accel] : [])];
+    document.getElementById('ex-name').textContent = 'пример: ' + ex;
+    document.title = `KasperskyOS · ${ex} · QEMU-Wasm`;
+
+    async function fetchGunzip(url, onProgress) {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+      // Некоторые dev-серверы отдают *.gz с Content-Encoding: gzip —
+      // тогда браузер уже распаковал тело, повторная распаковка не нужна.
+      const alreadyDecoded = (r.headers.get('content-encoding') || '').includes('gzip');
+      const reader = r.body.getReader();
+      const chunks = [];
+      let loaded = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        loaded += value.length;
+        if (onProgress) onProgress(loaded);
+      }
+      const blob = new Blob(chunks);
+      if (alreadyDecoded) return new Uint8Array(await blob.arrayBuffer());
+      const ds = blob.stream().pipeThrough(new DecompressionStream('gzip'));
+      return new Uint8Array(await new Response(ds).arrayBuffer());
+    }
+
+    const term = new Terminal({
+      fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
+      fontSize: 13,
+      cursorBlink: true,
+      scrollback: 5000,
+      theme: { background: '#0a0e13', foreground: '#e6edf3', cursor: '#00c88e' },
+    });
+    window.__term = term;
+    const termWrap = document.getElementById('terminal-wrap');
+    term.open(document.getElementById('terminal'));
+
+    // Растягиваем терминал на всё окно: считаем cols/rows по реальному
+    // размеру ячейки (замеряем отрендеренный .xterm-screen).
+    // xterm-pty ловит onResize и шлёт SIGWINCH в гостя.
+    function fitTerm() {
+      const scr = termWrap.querySelector('.xterm-screen');
+      let cw = 7.8, ch = 17; // первое приближение до первого рендера
+      if (scr && term.cols > 0 && scr.clientWidth > 0) {
+        cw = scr.clientWidth / term.cols;
+        ch = scr.clientHeight / term.rows;
+      }
+      // 20px запас по ширине: скроллбар вьюпорта + внутренний отступ слева
+      const cols = Math.max(20, Math.floor((termWrap.clientWidth - 20) / cw));
+      const rows = Math.max(5, Math.floor(termWrap.clientHeight / ch));
+      if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
+    }
+    fitTerm();
+    // второй проход после первого рендера — размеры ячеек уже точные
+    requestAnimationFrame(() => { fitTerm(); requestAnimationFrame(fitTerm); });
+    window.addEventListener('resize', fitTerm);
+    new ResizeObserver(fitTerm).observe(termWrap);
+
+    const { master, slave } = openpty();
+    term.loadAddon(master);
+
+    const Module = {
+      pty: slave,
+      mainScriptUrlOrBlob: new URL('./runtime/out.js', location.href).href,
+      arguments: [
+        '-m', '512',
+        '-machine', 'virt,gic-version=3,highmem=on,highmem-ecam=off',
+        '-cpu', 'cortex-a55',
+        '-nographic', '-monitor', 'none',
+        '-serial', 'stdio',
+        '-nic', 'none',
+        '-device', 'sdhci-pci',
+        '-device', 'sd-card,drive=sdcard',
+        '-drive', 'file=/pack/rootfs.img,format=raw,if=none,id=sdcard',
+        '-initrd', '/pack/vendor_romfs.romfs',
+        '-kernel', '/pack/image',
+        ...extraArgs,
+      ],
+      print: (t) => console.log(t),
+      printErr: (t) => console.warn(t),
+      // Синхронный preRun: файлы уже загружены и распакованы — просто пишем в FS
+      preRun: [function () {
+        const FS = Module.FS;
+        FS.mkdir('/pack');
+        FS.writeFile('/pack/image', window.__packImage);
+        FS.writeFile('/pack/vendor_romfs.romfs', window.__packVendor);
+        FS.writeFile('/pack/rootfs.img', window.__packRootfs);
+        window.__packImage = window.__packVendor = window.__packRootfs = null;
+      }],
+    };
+
+    try {
+      say(`Загрузка образа примера «${ex}»…`);
+      const [kernel, vendor, rootfs] = await Promise.all([
+        fetchGunzip('./runtime/image.gz'),
+        fetchGunzip(`./images/${ex}/vendor_romfs.romfs.gz`),
+        fetchGunzip(`./images/${ex}/rootfs.img.gz`, (l) =>
+          say(`Загрузка образа примера «${ex}»… ${(l / 1048576).toFixed(1)} МБ`)),
+      ]);
+      window.__packImage = kernel;
+      window.__packVendor = vendor;
+      window.__packRootfs = rootfs;
+
+      say('Образ загружен. Загрузка qemu-system-aarch64.wasm (66 МБ)…');
+      const initQemu = (await import('./runtime/out.js')).default;
+      say('Запуск KasperskyOS…', 'ok');
+      const instance = await initQemu(Module);
+
+      const oldPoll = Module.TTY.stream_ops.poll;
+      const pty = Module.pty;
+      Module.TTY.stream_ops.poll = function (stream, timeout) {
+        if (!pty.readable) {
+          return (pty.readable ? 1 : 0) | (pty.writable ? 4 : 0);
+        }
+        return oldPoll.call(this, stream, timeout);
+      };
+      const bootTimer = setInterval(() => {
+        if (term.buffer.active.length > 2 && term.buffer.active.getLine(0)?.translateToString()) {
+          say('KasperskyOS работает. Первая загрузка под TCI-интерпретатором занимает несколько минут.', 'ok');
+          clearInterval(bootTimer);
+        }
+      }, 1000);
+    } catch (e) {
+      say('Ошибка запуска: ' + (e && e.message ? e.message : e), 'err');
+      console.error(e);
+    }
+  </script>
+</body>
+</html>
