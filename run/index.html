@@ -68,11 +68,12 @@
     const accel = qs.get('accel'); // например: tcg,thread=multi
 
     // Аргументы, специфичные для отдельных примеров
-    const EXTRA_ARGS = {
-      uart: ['-append', 'diag.handoff=uart'],
-      uart_toybox: ['-append', 'diag.handoff=uart'],
-    };
-    const extraArgs = [...(EXTRA_ARGS[ex] || []), '-smp', smp,
+    // Аргументы ядра: общие для всех примеров + diag.handoff=uart для uart-примеров
+    const HANDOFF_UART = new Set(['uart', 'uart_toybox', 'kcfm_echo_server']);
+    const appendParts = [];
+    if (HANDOFF_UART.has(ex)) appendParts.push('diag.handoff=uart');
+    appendParts.push('handle.disable_detect_invalid_access', 'diag.buffer.size=8000');
+    const extraArgs = ['-append', appendParts.join(' '), '-smp', smp,
                        ...(accel ? ['-accel', accel] : [])];
     document.getElementById('ex-name').textContent = 'пример: ' + ex;
     document.title = `KasperskyOS · ${ex} · QEMU-Wasm`;
