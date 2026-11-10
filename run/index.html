@@ -58,6 +58,7 @@
 
   <script src="./runtime/xterm.js"></script>
   <script src="./runtime/xterm-pty.js"></script>
+  <script src="./net/packets.js"></script>
   <script type="module">
     const statusEl = document.getElementById('status');
     const say = (msg, cls) => { statusEl.innerHTML = `<span class="${cls || ''}">${msg}</span>`; };
@@ -66,6 +67,16 @@
     const qs = new URLSearchParams(location.search);
     const smp = qs.get('smp') || '2'; // SMP-ядро гостя: 2 vCPU быстрее ~12%
     const accel = qs.get('accel'); // например: tcg,thread=multi
+
+    // -netdev socket поверх WebSocket (эмулируется emscripten).
+    // net=browser — только разбор отправленных гостем Ethernet-кадров, без ответов и выхода в сеть;
+    // net=delegate=ws://localhost:9999 — необязательный внешний WebSocket-мост.
+    const netParam = qs.get('net'); // 'browser' | 'delegate=ws://host:port' | null
+    const netMode = netParam ? (netParam.startsWith('delegate=') ? 'delegate' : netParam) : null;
+    if (netMode) {
+      NetPackets.install();     // перехват WebSocket до загрузки qemu
+      NetPackets.createPanel(); // панель пакетов внизу страницы
+    }
 
     // Аргументы, специфичные для отдельных примеров
     // Аргументы ядра: общие для всех примеров + diag.handoff=uart для uart-примеров
@@ -144,7 +155,9 @@
         '-cpu', 'cortex-a55',
         '-nographic', '-monitor', 'none',
         '-serial', 'stdio',
-        '-nic', 'none',
+        ...(netMode
+          ? ['-device', 'rtl8139,netdev=net0,romfile=', '-netdev', 'socket,id=net0,connect=localhost:8888']
+          : ['-nic', 'none']),
         '-device', 'sdhci-pci',
         '-device', 'sd-card,drive=sdcard',
         '-drive', 'file=/pack/rootfs.img,format=raw,if=none,id=sdcard',
@@ -164,6 +177,15 @@
         window.__packImage = window.__packVendor = window.__packRootfs = null;
       }],
     };
+
+    if (netMode === 'delegate') {
+      Module.websocket = { url: netParam.slice('delegate='.length) };
+    } else if (netMode === 'browser') {
+      // Адрес перехватывается VirtualWebSocket: пакеты только отображаются.
+      Module.websocket = { url: 'ws://net-browser/' };
+    } else if (netMode) {
+      throw new Error('Неизвестный режим net: ' + netMode);
+    }
 
     try {
       say(`Загрузка образа примера «${ex}»…`);

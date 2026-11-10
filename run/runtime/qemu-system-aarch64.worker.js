@@ -1,3 +1,5 @@
+import '../net/packets.js';
+NetPackets.install();
 /**
  * @license
  * Copyright 2015 The Emscripten Authors
